@@ -17,7 +17,5 @@
 echo 'src-git helloworld https://github.com/fw876/helloworld' >>feeds.conf.default
 #echo 'src-git passwall https://github.com/xiaorouji/openwrt-passwall' >>feeds.conf.default
 
-cd openwrt
-git pull origin master
-./scripts/feeds update -a
-./scripts/feeds install -a
+echo "删除有问题的 VC4 测试补丁..."
+rm -f target/linux/bcm27xx/patches-6.6/950-0624-drm-vc4-tests-Drop-drm-parameter-for-vc4_find_crtc_f.patch
