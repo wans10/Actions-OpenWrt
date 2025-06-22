@@ -1,20 +1,44 @@
-#
-# https://github.com/P3TERX/Actions-OpenWrt
-#
-# File: .github/workflows/openwrt-bulder.yml
-# Description: Build OpenWrt using GitHub Actions
-#
-# Copyright (c) 2019-2024 P3TERX <https://p3terx.com>
-#
-# This is free software, licensed under the MIT License.
-# See /LICENSE for more information.
-#
-
 name: OpenWrt Builder
 
 on:
   repository_dispatch:
   workflow_dispatch:
+    inputs:
+      clean_android:
+        description: 'Remove Android runtime'
+        required: false
+        default: 'true'
+        type: boolean
+      clean_dotnet:
+        description: 'Remove .NET runtime'
+        required: false
+        default: 'true'
+        type: boolean
+      clean_haskell:
+        description: 'Remove Haskell runtime'
+        required: false
+        default: 'true'
+        type: boolean
+      clean_large_packages:
+        description: 'Remove large packages'
+        required: false
+        default: 'true'
+        type: boolean
+      clean_docker_images:
+        description: 'Remove Docker images'
+        required: false
+        default: 'true'
+        type: boolean
+      clean_tool_cache:
+        description: 'Remove image tool cache'
+        required: false
+        default: 'false'
+        type: boolean
+      clean_swap_storage:
+        description: 'Remove swap storage'
+        required: false
+        default: 'true'
+        type: boolean
 
 env:
   REPO_URL: https://github.com/coolsnowwolf/lede
@@ -33,128 +57,295 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@main
+      - name: Checkout
+        uses: actions/checkout@main
 
-    - name: Initialization environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Free disk space
+        env:
+          CLEAN_ANDROID: ${{ github.event.inputs.clean_android || 'true' }}
+          CLEAN_DOTNET: ${{ github.event.inputs.clean_dotnet || 'true' }}
+          CLEAN_HASKELL: ${{ github.event.inputs.clean_haskell || 'true' }}
+          CLEAN_LARGE_PACKAGES: ${{ github.event.inputs.clean_large_packages || 'true' }}
+          CLEAN_DOCKER_IMAGES: ${{ github.event.inputs.clean_docker_images || 'true' }}
+          CLEAN_TOOL_CACHE: ${{ github.event.inputs.clean_tool_cache || 'false' }}
+          CLEAN_SWAP_STORAGE: ${{ github.event.inputs.clean_swap_storage || 'true' }}
+        run: |
+          # ======
+          # MACROS
+          # ======
+
+          # macro to print a line of equals
+          printSeparationLine() {
+            str=${1:=}
+            num=${2:-80}
+            counter=1
+            output=""
+            while [ $counter -le $num ]
+            do
+               output="${output}${str}"
+               counter=$((counter+1))
+            done
+            echo "${output}"
+          }
+
+          # macro to compute available space
+          getAvailableSpace() { echo $(df -a $1 | awk 'NR > 1 {avail+=$4} END {print avail}'); }
+
+          # macro to make Kb human readable
+          formatByteCount() { echo $(numfmt --to=iec-i --suffix=B --padding=7 $1'000'); }
+
+          # macro to output saved space
+          printSavedSpace() {
+            saved=${1}
+            title=${2:-}
+
+            echo ""
+            printSeparationLine '*' 80
+            if [ ! -z "${title}" ]; then
+              echo "=> ${title}: Saved $(formatByteCount $saved)"
+            else
+              echo "=> Saved $(formatByteCount $saved)"
+            fi
+            printSeparationLine '*' 80
+            echo ""
+          }
+
+          # macro to print output of dh with caption
+          printDH() {
+            caption=${1:-}
+
+            printSeparationLine '=' 80
+            echo "${caption}"
+            echo ""
+            echo "$ dh -h /"
+            echo ""
+            df -h /
+            echo "$ dh -a /"
+            echo ""
+            df -a /
+            echo "$ dh -a"
+            echo ""
+            df -a
+            printSeparationLine '=' 80
+          }
+
+          # Display initial disk space stats
+          AVAILABLE_INITIAL=$(getAvailableSpace)
+          AVAILABLE_ROOT_INITIAL=$(getAvailableSpace '/')
+
+          printDH "BEFORE CLEAN-UP:"
+          echo ""
+
+          # Option: Remove Android library
+          if [[ $CLEAN_ANDROID == 'true' ]]; then
+            BEFORE=$(getAvailableSpace)
+            sudo rm -rf /usr/local/lib/android || true
+            AFTER=$(getAvailableSpace)
+            SAVED=$((AFTER-BEFORE))
+            printSavedSpace $SAVED "Android library"
+          fi
+
+          # Option: Remove .NET runtime
+          if [[ $CLEAN_DOTNET == 'true' ]]; then
+            BEFORE=$(getAvailableSpace)
+            sudo rm -rf /usr/share/dotnet || true
+            AFTER=$(getAvailableSpace)
+            SAVED=$((AFTER-BEFORE))
+            printSavedSpace $SAVED ".NET runtime"
+          fi
+
+          # Option: Remove Haskell runtime
+          if [[ $CLEAN_HASKELL == 'true' ]]; then
+            BEFORE=$(getAvailableSpace)
+            sudo rm -rf /opt/ghc || true
+            sudo rm -rf /usr/local/.ghcup || true
+            AFTER=$(getAvailableSpace)
+            SAVED=$((AFTER-BEFORE))
+            printSavedSpace $SAVED "Haskell runtime"
+          fi
+
+          # Option: Remove large packages
+          if [[ $CLEAN_LARGE_PACKAGES == 'true' ]]; then
+            BEFORE=$(getAvailableSpace)
+            sudo apt-get remove -y '^aspnetcore-.*' || echo "::warning::The command [sudo apt-get remove -y '^aspnetcore-.*'] failed to complete successfully. Proceeding..."
+            sudo apt-get remove -y '^dotnet-.*' --fix-missing || echo "::warning::The command [sudo apt-get remove -y '^dotnet-.*' --fix-missing] failed to complete successfully. Proceeding..."
+            sudo apt-get remove -y '^llvm-.*' --fix-missing || echo "::warning::The command [sudo apt-get remove -y '^llvm-.*' --fix-missing] failed to complete successfully. Proceeding..."
+            sudo apt-get remove -y 'php.*' --fix-missing || echo "::warning::The command [sudo apt-get remove -y 'php.*' --fix-missing] failed to complete successfully. Proceeding..."
+            sudo apt-get remove -y '^mongodb-.*' --fix-missing || echo "::warning::The command [sudo apt-get remove -y '^mongodb-.*' --fix-missing] failed to complete successfully. Proceeding..."
+            sudo apt-get remove -y '^mysql-.*' --fix-missing || echo "::warning::The command [sudo apt-get remove -y '^mysql-.*' --fix-missing] failed to complete successfully. Proceeding..."
+            sudo apt-get remove -y azure-cli google-chrome-stable firefox powershell mono-devel libgl1-mesa-dri --fix-missing || echo "::warning::The command [sudo apt-get remove -y azure-cli google-chrome-stable firefox powershell mono-devel libgl1-mesa-dri --fix-missing] failed to complete successfully. Proceeding..."
+            sudo apt-get remove -y google-cloud-sdk --fix-missing || echo "::debug::The command [sudo apt-get remove -y google-cloud-sdk --fix-missing] failed to complete successfully. Proceeding..."
+            sudo apt-get remove -y google-cloud-cli --fix-missing || echo "::debug::The command [sudo apt-get remove -y google-cloud-cli --fix-missing] failed to complete successfully. Proceeding..."
+            sudo apt-get autoremove -y || echo "::warning::The command [sudo apt-get autoremove -y] failed to complete successfully. Proceeding..."
+            sudo apt-get clean || echo "::warning::The command [sudo apt-get clean] failed to complete successfully. Proceeding..."
+            AFTER=$(getAvailableSpace)
+            SAVED=$((AFTER-BEFORE))
+            printSavedSpace $SAVED "Large misc. packages"
+          fi
+
+          # Option: Remove Docker images
+          if [[ $CLEAN_DOCKER_IMAGES == 'true' ]]; then
+            BEFORE=$(getAvailableSpace)
+            sudo docker image prune --all --force || true
+            AFTER=$(getAvailableSpace)
+            SAVED=$((AFTER-BEFORE))
+            printSavedSpace $SAVED "Docker images"
+          fi
+
+          # Option: Remove tool cache
+          if [[ $CLEAN_TOOL_CACHE == 'true' ]]; then
+            BEFORE=$(getAvailableSpace)
+            sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
+            AFTER=$(getAvailableSpace)
+            SAVED=$((AFTER-BEFORE))
+            printSavedSpace $SAVED "Tool cache"
+          fi
+
+          # Option: Remove Swap storage
+          if [[ $CLEAN_SWAP_STORAGE == 'true' ]]; then
+            BEFORE=$(getAvailableSpace)
+            sudo swapoff -a || true
+            sudo rm -f /mnt/swapfile || true
+            free -h
+            AFTER=$(getAvailableSpace)
+            SAVED=$((AFTER-BEFORE))
+            printSavedSpace $SAVED "Swap storage"
+          fi
+
+          # Output saved space statistic
+          AVAILABLE_END=$(getAvailableSpace)
+          AVAILABLE_ROOT_END=$(getAvailableSpace '/')
+
+          echo ""
+          printDH "AFTER CLEAN-UP:"
+          echo ""
+          echo ""
+          echo "/dev/root:"
+          printSavedSpace $((AVAILABLE_ROOT_END - AVAILABLE_ROOT_INITIAL))
+          echo "overall:"
+          printSavedSpace $((AVAILABLE_END - AVAILABLE_INITIAL))
+
+      - name: Initialization environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          # Removing some directories - these are now handled in the free disk space step
+          # but keeping CodeQL cleanup which wasn't in the disk space action
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
         sudo docker image prune --all --force
-        sudo -E apt-get -qq update
+          sudo -E apt-get -qq update
         sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
-        sudo -E apt-get -qq autoremove --purge
-        sudo -E apt-get -qq clean
-        sudo timedatectl set-timezone "$TZ"
-        sudo mkdir -p /workdir
-        sudo chown $USER:$GROUPS /workdir
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo timedatectl set-timezone "$TZ"
+          sudo mkdir -p /workdir
+          sudo chown $USER:$GROUPS /workdir
 
-    - name: Clone source code
-      working-directory: /workdir
-      run: |
-        df -hT $PWD
-        git clone $REPO_URL -b $REPO_BRANCH openwrt
-        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+      - name: Clone source code
+        working-directory: /workdir
+        run: |
+          df -hT $PWD
+          git clone $REPO_URL -b $REPO_BRANCH openwrt
+          ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-    - name: Load custom feeds
-      run: |
-        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
-        chmod +x $DIY_P1_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P1_SH
+      - name: Load custom feeds
+        run: |
+          [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
+          chmod +x $DIY_P1_SH
+          cd openwrt
+          $GITHUB_WORKSPACE/$DIY_P1_SH
 
-    - name: Update feeds
-      run: cd openwrt && ./scripts/feeds update -a
+      - name: Update feeds
+        run: cd openwrt && ./scripts/feeds update -a
 
-    - name: Install feeds
-      run: cd openwrt && ./scripts/feeds install -a
+      - name: Install feeds
+        run: cd openwrt && ./scripts/feeds install -a
 
-    - name: Load custom configuration
-      run: |
-        [ -e files ] && mv files openwrt/files
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
-        chmod +x $DIY_P2_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P2_SH
+      - name: Load custom configuration
+        run: |
+          [ -e files ] && mv files openwrt/files
+          [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+          chmod +x $DIY_P2_SH
+          cd openwrt
+          $GITHUB_WORKSPACE/$DIY_P2_SH
 
-    - name: Download package
-      id: package
-      run: |
-        cd openwrt
-        make defconfig
-        make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
+      - name: Download package
+        id: package
+        run: |
+          cd openwrt
+          make defconfig
+          make download -j8
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
 
-    - name: Compile the firmware
-      id: compile
-      run: |
-        cd openwrt
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
-        echo "status=success" >> $GITHUB_OUTPUT
-        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
-        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
-        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+      - name: Compile the firmware
+        id: compile
+        run: |
+          cd openwrt
+          echo -e "$(nproc) thread compile"
+          make -j$(nproc) || make -j1 || make -j1 V=s
+          echo "status=success" >> $GITHUB_OUTPUT
+          grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
+          [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
+          echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
-    - name: Check space usage
-      if: (!cancelled())
-      run: df -hT
+      - name: Check space usage
+        if: (!cancelled())
+        run: df -hT
 
-    - name: Upload bin directory
-      uses: actions/upload-artifact@main
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      with:
-        name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: openwrt/bin
+      - name: Upload bin directory
+        uses: actions/upload-artifact@main
+        if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+        with:
+          name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+          path: openwrt/bin
 
-    - name: Organize files
-      id: organize
-      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
-      run: |
-        cd openwrt/bin/targets/*/*
-        rm -rf packages
-        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
+      - name: Organize files
+        id: organize
+        if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+        run: |
+          cd openwrt/bin/targets/*/*
+          rm -rf packages
+          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+          echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: Upload firmware directory
-      uses: actions/upload-artifact@main
-      if: steps.organize.outputs.status == 'success' && !cancelled()
-      with:
-        name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE }}
+      - name: Upload firmware directory
+        uses: actions/upload-artifact@main
+        if: steps.organize.outputs.status == 'success' && !cancelled()
+        with:
+          name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+          path: ${{ env.FIRMWARE }}
 
-    - name: Generate release tag
-      id: tag
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-      run: |
-        echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
-        touch release.txt
+      - name: Generate release tag
+        id: tag
+        if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+        run: |
+          echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
+          touch release.txt
         [ ${UPLOAD_GOFILE} = true && ${{ steps.gofile.outputs.url }} ] && echo "🔗 [GoFile](${{ steps.gofile.outputs.url }})" >> release.txt
-        echo "status=success" >> $GITHUB_OUTPUT
+          echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: Upload firmware to release
-      uses: softprops/action-gh-release@master
-      if: steps.tag.outputs.status == 'success' && !cancelled()
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.tag.outputs.release_tag }}
-        body_path: release.txt
-        files: ${{ env.FIRMWARE }}/*
+      - name: Upload firmware to release
+        uses: softprops/action-gh-release@master
+        if: steps.tag.outputs.status == 'success' && !cancelled()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          body_path: release.txt
+          files: ${{ env.FIRMWARE }}/*
 
-    - name: Delete workflow runs
-      uses: Mattraks/delete-workflow-runs@main
-      with:
-        retain_days: 0
-        keep_minimum_runs: 2
+      - name: Delete workflow runs
+        uses: Mattraks/delete-workflow-runs@main
+        with:
+          retain_days: 0
+          keep_minimum_runs: 2
 
-    - name: Remove old Releases
-      uses: dev-drprasad/delete-older-releases@master
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-      with:
-        keep_latest: 3
-        delete_tags: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Remove old Releases
+        uses: dev-drprasad/delete-older-releases@master
+        if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+        with:
+          keep_latest: 3
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
